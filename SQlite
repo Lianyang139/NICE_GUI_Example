@@ -1,0 +1,269 @@
+# data.py
+import sqlite3
+import json
+
+DB_PATH = 'my_store.db'  # 数据库路径（统一管理）
+
+
+# ==================== 1. 创建表 ====================
+def create_products_table():
+    """创建商品表（如果不存在）"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS products
+                   (
+                       id
+                       TEXT
+                       PRIMARY
+                       KEY,
+                       name
+                       TEXT
+                       NOT
+                       NULL,
+                       price
+                       REAL,
+                       category
+                       TEXT,
+                       brand
+                       TEXT,
+                       description
+                       TEXT,
+                       images
+                       TEXT,
+                       stock
+                       INTEGER,
+                       status
+                       TEXT,
+                       attributes
+                       TEXT,
+                       tags
+                       TEXT,
+                       created_at
+                       TEXT
+                   )
+                   ''')
+    conn.commit()
+    conn.close()
+    print("✅ 商品表初始化完成")
+
+
+# ==================== 2. 增：插入商品 ====================
+def insert_product(product):
+    """插入单个商品"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+                       INSERT INTO products (id, name, price, category, brand, description,
+                                             images, stock, status, attributes, tags, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ''', (
+                           product['id'],
+                           product['name'],
+                           product['price'],
+                           product['category'],
+                           product['brand'],
+                           product['description'],
+                           json.dumps(product['images']),
+                           product['stock'],
+                           product['status'],
+                           json.dumps(product['attributes']),
+                           json.dumps(product['tags']),
+                           product['created_at']
+                       ))
+        conn.commit()
+        print(f"✅ 商品 '{product['name']}' 插入成功")
+    except sqlite3.IntegrityError:
+        print(f"❌ 商品 ID '{product['id']}' 已存在，插入失败")
+    finally:
+        conn.close()
+
+
+# ==================== 3. 查：获取所有商品 ====================
+def get_all_products():
+    """获取所有商品（自动还原 JSON 字段）"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # 让结果支持 dict-like 访问
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM products")
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 将每行转换为字典，并还原 JSON 字段
+    products = []
+    for row in rows:
+        product = dict(row)
+        product['images'] = json.loads(product['images'])
+        product['attributes'] = json.loads(product['attributes'])
+        product['tags'] = json.loads(product['tags'])
+        products.append(product)
+    return products
+
+
+# ==================== 4. 查：根据 ID 获取单个商品 ====================
+def get_product_by_id(product_id):
+    """根据 ID 查询商品"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM products WHERE id = ?", (product_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        product = dict(row)
+        product['images'] = json.loads(product['images'])
+        product['attributes'] = json.loads(product['attributes'])
+        product['tags'] = json.loads(product['tags'])
+        return product
+    return None
+
+
+# ==================== 5. 改：更新商品 ====================
+def update_product(product_id, updates):
+    """
+    更新商品信息
+    :param product_id: 要更新的商品ID
+    :param updates: dict，包含要更新的字段，如 {'price': 999, 'stock': 10}
+    """
+    # 确保不能更新 id（主键）
+    if 'id' in updates:
+        raise ValueError("不能更新商品ID")
+
+    # 构建 SET 子句（动态生成）
+    set_fields = []
+    values = []
+    for key, value in updates.items():
+        if key in ['images', 'attributes', 'tags']:
+            set_fields.append(f"{key} = ?")
+            values.append(json.dumps(value))
+        else:
+            set_fields.append(f"{key} = ?")
+            values.append(value)
+
+    if not set_fields:
+        print("⚠️ 没有提供要更新的字段")
+        return False
+
+    values.append(product_id)  # WHERE 条件的值
+
+    sql = f"UPDATE products SET {', '.join(set_fields)} WHERE id = ?"
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(sql, values)
+    changed = cursor.rowcount  # 受影响的行数
+    conn.commit()
+    conn.close()
+
+    if changed > 0:
+        print(f"✅ 商品 '{product_id}' 更新成功")
+        return True
+    else:
+        print(f"⚠️ 商品 '{product_id}' 未找到或无变化")
+        return False
+
+
+# ==================== 6. 删：删除商品 ====================
+def delete_product(product_id):
+    """根据 ID 删除商品"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    if changed > 0:
+        print(f"✅ 商品 '{product_id}' 已删除")
+        return True
+    else:
+        print(f"⚠️ 商品 '{product_id}' 未找到")
+        return False
+
+
+# ==================== 7. 查：按分类/品牌等条件搜索 ====================
+def search_products(category=None, brand=None, min_price=None, max_price=None):
+    """按条件搜索商品"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    conditions = []
+    params = []
+
+    if category:
+        conditions.append("category LIKE ?")
+        params.append(f"%{category}%")
+    if brand:
+        conditions.append("brand = ?")
+        params.append(brand)
+    if min_price is not None:
+        conditions.append("price >= ?")
+        params.append(min_price)
+    if max_price is not None:
+        conditions.append("price <= ?")
+        params.append(max_price)
+
+    where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+    sql = "SELECT * FROM products" + where_clause
+
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 还原 JSON 字段
+    products = []
+    for row in rows:
+        product = dict(row)
+        product['images'] = json.loads(product['images'])
+        product['attributes'] = json.loads(product['attributes'])
+        product['tags'] = json.loads(product['tags'])
+        products.append(product)
+    return products
+
+
+if __name__ == "__main__":
+    # 1. 初始化表
+    create_products_table()
+
+    # 2. 插入商品（用你自己的数据）
+    product = {
+        "id": "SKU1010",
+        "name": "便携式投影仪 Mini",
+        "price": 1299.0,
+        "category": "电子产品 > 影音设备",
+        "brand": "CineGo",
+        "description": "1080P支持...",
+        "images": ["https://example.com/p1.jpg"],
+        "stock": 5,
+        "status": "active",
+        "attributes": {"分辨率": "1080P"},
+        "tags": ["家庭影院", "便携"],
+        "created_at": "2026-03-15T09:00:00Z"
+    }
+
+    # 增
+    insert_product(product)
+
+    # 查（全部）
+    all_products = get_all_products()
+    print("\n📦 所有商品:")
+    for p in all_products:
+        print(f"- {p['name']} | 库存: {p['stock']}")
+
+    # 查（单个）
+    proj = get_product_by_id("SKU1010")
+    if proj:
+        print(f"\n🔍 查询结果: {proj['name']}, 分辨率: {proj['attributes']['分辨率']}")
+
+    # 改
+    update_product("SKU1010", {"price": 1199.0, "stock": 10})
+
+    # 查（条件搜索）
+    cheap_electronics = search_products(category="电子产品", max_price=1500)
+    print(f"\n💰 1500元以下的电子产品: {len(cheap_electronics)} 件")
+
+    # 删（谨慎！）
+    # delete_product("SKU1010")
